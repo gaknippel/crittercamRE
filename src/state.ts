@@ -31,17 +31,24 @@ export function useReCam() {
   const [status, setStatus] = useState<Status>({ game_running: false, script_installed: false, script_current: false, script_version: "", state: null, live: false });
   const [game, setGame] = useState<GameState | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const seen = useRef({ t: -1, changedAt: 0, note: -1 });
+  const seen = useRef({ t: -1, changedAt: 0, note: -1, boot: -1 });
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
 
-  // persist + push on every change. the script also reads the last file when it loads, so settings survive restarts of either side.
+  // to whichever game is running; that game's script also reads the last file when it loads
+  const push = useCallback(() => {
+    invoke("write_cmd", { json: JSON.stringify({ seq: Date.now(), ...savedRef.current }) }).catch(() => {}); // no game: pushed when a script shows up
+  }, []);
+
+  // persist + push on every change
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
     } catch {
       // storage unavailable: settings just won't persist
     }
-    invoke("write_cmd", { json: JSON.stringify({ seq: Date.now(), ...saved }) }).catch(() => {}); // game not running: pushed again on the next change or start
-  }, [saved]);
+    push();
+  }, [saved, push]);
 
   const toast = useCallback((text: string) => {
     const t = { text, seq: Date.now() + Math.random() };
@@ -64,6 +71,11 @@ export function useReCam() {
           }
           const now = Date.now();
           const k = seen.current;
+          // a script (re)started, maybe in another game than the one we last wrote to: give it the settings
+          if (g && g.boot !== k.boot) {
+            k.boot = g.boot;
+            push();
+          }
           if (g && g.t !== k.t) {
             k.t = g.t;
             k.changedAt = now;
@@ -82,7 +94,7 @@ export function useReCam() {
       alive = false;
       clearInterval(timer);
     };
-  }, [toast]);
+  }, [toast, push]);
 
   const setSetting = (id: string, value: SettingValue) => setSaved((s) => ({ ...s, settings: { ...s.settings, [id]: value } }));
   const setBinding = (id: string, binding: Binding) => setSaved((s) => ({ ...s, bindings: { ...s.bindings, [id]: binding } }));
