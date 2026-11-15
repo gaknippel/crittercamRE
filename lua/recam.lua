@@ -1,8 +1,8 @@
--- recam: crittercam's free cam for RESIDENT EVIL 4 and 2 (REFramework). Installed and configured by the re cam app.
+-- recam: crittercam's free cam for RESIDENT EVIL 2, 4 and 9 (REFramework). Installed and configured by the re cam app.
 -- Settings + key bindings come in through reframework/data/recam_cmd.json, state + messages go out through recam_state.json.
 -- Speeds use crittercam's units: per 8 ms tick, radians for look speed and zoom.
 
-local VERSION = "6" -- bump on every change: the app compares it to tell an old script still running from the new one
+local VERSION = "8" -- bump on every change: the app compares it to tell an old script still running from the new one
 local TICK = 0.008
 local MOUSE_SPEED_CORRECTION = 0.2
 local FOV_CHANGE_SCALE = 0.01
@@ -27,7 +27,7 @@ local function notify(text) note = { n = note.n + 1, text = text } end
 
 local td = sdk.find_type_definition
 local T = {
-    app = td("via.Application"), kb = td("via.hid.Keyboard"), kbdev = td("via.hid.KeyboardDevice"),
+    app = td("via.Application"), kb = td("via.hid.Keyboard"),
     mouse = td("via.hid.Mouse"), mousedev = td("via.hid.MouseDevice"), pad = td("via.hid.GamePad"), paddev = td("via.hid.GamePadDevice"),
 }
 
@@ -65,8 +65,6 @@ end
 
 local PAD = enum("via.hid.GamePadButton", { y = "RUp", x = "RLeft", b = "RRight", up = "LUp", down = "LDown", left = "LLeft", right = "LRight" })
 local MB = enum("via.hid.MouseButton", { l = "L", r = "R" })
--- the app sends windows virtual key codes; RE Engine's KeyboardKey should be the same numbers
-if enum("via.hid.KeyboardKey", { ins = "Insert" }).ins ~= 45 then warn = warn or "via.hid.KeyboardKey isn't windows key codes, keys will be wrong" end
 
 ------------------------------------------------------------------------------------------------ math
 
@@ -96,7 +94,8 @@ local function camera()
     return c, c and c:call("get_GameObject"):call("get_Transform")
 end
 
-local GAME = td("chainsaw.CameraSystem") and "re4" or td("app.ropeway.camera.CameraSystem") and "re2" or nil
+local GAME = td("chainsaw.CameraSystem") and "re4" or td("app.ropeway.camera.CameraSystem") and "re2"
+    or td("app.CameraBlender") and td("app.GameInputManager") and "re9" or nil
 if not GAME then warn = "unknown game: the camera works, but blocking game input doesn't" end
 
 local function main_camera_controller()
@@ -106,6 +105,9 @@ local function main_camera_controller()
     elseif GAME == "re2" then
         local cs = sdk.get_managed_singleton("app.ropeway.camera.CameraSystem")
         return cs and cs:get_field("MainCameraController")
+    elseif GAME == "re9" then
+        local cs = sdk.get_managed_singleton("app.CameraSystem")
+        return cs and cs:call("getCameraBlender", 0) -- role 0: the main camera
     end
 end
 
@@ -153,6 +155,8 @@ local TOGGLE_WAIT = 6
 -- no file or a stale one (app closed) = assume it is.
 local focused = true
 
+local key_was = {} -- vk -> down last time it was checked, for "pressed" edges
+
 local function handle_input()
     if tick % 3 == 0 then
         local f = json.load_file("recam_focus.json")
@@ -163,16 +167,19 @@ local function handle_input()
         toggle_at = nil
         return
     end
-    local kb = nat(T.kb, "via.hid.Keyboard", "get_Device")
-    if not kb then return end
-    local function down(vk) return dcall(kb, T.kbdev, "isDown", vk) end
+    -- keys straight from windows: the game's keyboard device updates on its own thread in re9, so its "pressed this
+    -- frame" never lines up with ours. only reached while the game has focus (see above).
+    local function down(vk) return reframework:is_key_down(vk) end
     local alt = down(18) or down(164) or down(165)
     local ctrl = down(17) or down(162) or down(163)
     local shift = down(16) or down(160) or down(161)
     local function held(id) return down(K[id].vk) end -- held keys ignore modifiers, so alt / ctrl can speed them up
     local function pressed(id)
         local b = K[id]
-        return dcall(kb, T.kbdev, "isTrigger", b.vk) and alt == not not b.alt and ctrl == not not b.ctrl and shift == not not b.shift
+        local d = down(b.vk)
+        local edge = d and not key_was[b.vk]
+        key_was[b.vk] = d
+        return edge and alt == not not b.alt and ctrl == not not b.ctrl and shift == not not b.shift
     end
 
     tick = tick + 1
@@ -294,6 +301,9 @@ local function write_camera()
     elseif mcc and GAME == "re2" then
         mcc:call("set_CameraRotation", rot)
         mcc:call("set_FOV", cam.fov)
+    elseif mcc and GAME == "re9" then
+        mcc:set_field("_CameraRotation", rot)
+        mcc:set_field("_RequestFOV", cam.fov)
     end
 end
 
@@ -373,9 +383,80 @@ for _, m in ipairs(unit_t and unit_t:get_methods() or {}) do
     end
 end
 
+-- RE9: app.ManagedKeyboard / ManagedMouse / ManagedGamePad wrap the via.hid devices each player's GameInputProvider reads.
+-- Same null device trick on their _Device. They're found by walking the provider's objects (refreshed now and then, for
+-- pads plugged in later). The game camera's own input gets switched off too, so the mouse can't turn it.
+local MANAGED = { ["app.ManagedKeyboard"] = "kb", ["app.ManagedMouse"] = "mouse", ["app.ManagedGamePad"] = "pad" }
+
+local function collect(obj, depth, out, seen)
+    if depth > 4 or not sdk.is_managed_object(obj) then return end
+    local a = obj:get_address()
+    if seen[a] then return end
+    seen[a] = true
+    local tn = obj:get_type_definition():get_full_name()
+    if MANAGED[tn] then out[#out + 1] = { obj = obj, kind = MANAGED[tn] } return end
+    if tn:sub(-2) == "[]" then
+        for _, e in ipairs(obj:get_elements()) do collect(e, depth + 1, out, seen) end
+        return
+    end
+    if tn:match("^System%.Collections%.Generic%.List") then return collect(obj:get_field("_items"), depth + 1, out, seen) end
+    local t = obj:get_type_definition()
+    while t and not t:get_full_name():match("^System%.") do
+        for _, f in ipairs(t:get_fields()) do
+            if not f:is_static() then
+                local ok, v = pcall(obj.get_field, obj, f:get_name())
+                if ok and type(v) == "userdata" then collect(v, depth + 1, out, seen) end
+            end
+        end
+        t = t:get_parent_type()
+    end
+end
+
+local managed, managed_age, camera_inoperable = {}, 0, false
+local NULL = {
+    kb = function() return nat(T.kb, "via.hid.Keyboard", "get_NullDevice") end,
+    mouse = function() return nat(T.mouse, "via.hid.Mouse", "get_NullDevice") end,
+    pad = function() return nat(T.pad, "via.hid.GamePad", "get_NullDevice") end,
+}
+
+local function set_camera_inoperable(on)
+    if on == camera_inoperable then return end
+    local cs = sdk.get_managed_singleton("app.CameraSystem")
+    local input = cs and cs:call("get_InputSubSystem")
+    if input then
+        input:call(on and "startInoperable" or "endInoperable")
+        camera_inoperable = on
+    end
+end
+
+local provider_t = GAME == "re9" and td("app.GameInputProvider")
+for _, m in ipairs(provider_t and provider_t:get_methods() or {}) do
+    if m:get_name() == "update" then
+        sdk.hook(m, function(args)
+            local provider = sdk.to_managed_object(args[2])
+            if not provider then return end
+            managed_age = managed_age - 1
+            if managed_age <= 0 then
+                local found = {}
+                collect(provider, 0, found, {})
+                if #found > 0 then managed = found end
+                managed_age = 300
+            end
+            local blocking = cam.on and cam.blocked
+            local kbm, pad = blocking and kbm_controls_camera(), blocking and pad_controls_camera()
+            for _, d in ipairs(managed) do
+                local block = d.kind == "pad" and pad or d.kind ~= "pad" and kbm
+                swap(d.obj:get_address(), d.obj, "_Device", block and NULL[d.kind]() or nil)
+            end
+            set_camera_inoperable(blocking)
+        end, function(rv) return rv end)
+    end
+end
+
 -- reset scripts / unload while blocked: give the game its devices back
 re.on_script_reset(function()
     for _, s in pairs(swapped) do pcall(function() s.obj:set_field(s.field, s.real) end) end
+    if camera_inoperable then pcall(set_camera_inoperable, false) end
     if mouse_ignored then pcall(function() sdk.get_managed_singleton("app.ropeway.InputSystem"):call("removeIgnoreMouseMove", "recam") end) end
     local c = camera()
     if cam.on and c then c:call("set_FOV", cam.fov0) end

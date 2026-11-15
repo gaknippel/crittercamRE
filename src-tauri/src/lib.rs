@@ -1,4 +1,4 @@
-// Finds the running re4.exe or re2.exe, installs lua/recam.lua into its reframework/autorun folder, and passes json files with it
+// Finds the running re2.exe, re4.exe or re9.exe, installs lua/recam.lua into its reframework/autorun folder, and passes json files with it
 // through reframework/data (the only folder REFramework's json.* functions can touch).
 use serde::Serialize;
 use std::fs;
@@ -8,7 +8,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
-const GAME_EXES: [&str; 2] = ["re4.exe", "re2.exe"];
+const GAME_EXES: [&str; 3] = ["re4.exe", "re2.exe", "re9.exe"];
 
 fn is_game(name: &str) -> bool {
     GAME_EXES.iter().any(|g| name.eq_ignore_ascii_case(g))
@@ -95,7 +95,7 @@ fn watch_focus() {
 }
 
 fn reframework() -> Result<PathBuf, String> {
-    Ok(game_dir().ok_or("resident evil 2 or 4 isn't running.")?.join("reframework"))
+    Ok(game_dir().ok_or("resident evil 2, 4 or 9 isn't running.")?.join("reframework"))
 }
 
 #[derive(Serialize)]

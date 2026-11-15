@@ -32,7 +32,7 @@ export default function App() {
           <img src={logo} alt="" className="size-9" />
           <div>
             <div className="font-heading text-base">re cam</div>
-            <div className="text-[11px] text-muted-foreground">resident evil 2 & 4</div>
+            <div className="text-[11px] text-muted-foreground">resident evil 2, 4 & 9</div>
           </div>
         </div>
         <StatusCard status={app.status} game={app.game} install={app.install} />
@@ -86,7 +86,7 @@ const STATES = {
   stale: { title: "old script still running", sub: "reframework menu → scriptrunner → reset scripts", dot: "bg-yellow-500" },
   outdated: { title: "script is outdated", sub: "update it, then reset scripts in reframework", dot: "bg-yellow-500" },
   ready: { title: "game running", sub: "install the camera script", dot: "bg-yellow-500" },
-  waiting: { title: "waiting for game", sub: "start re2 or re4 with reframework", dot: "bg-muted-foreground/50" },
+  waiting: { title: "waiting for game", sub: "start re2, re4 or re9 with reframework", dot: "bg-muted-foreground/50" },
 };
 
 function StatusCard({ status, game, install }: { status: Status; game: GameState | null; install: () => Promise<unknown> }) {
